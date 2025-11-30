@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DATA_DIR="../nuscenes"
+DATA_DIR="/home/libing/dataset/nuscene-mini/"
 # there should be ${DATA_DIR}/full_v1.0/
 # and also ${DATA_DIR}/mini
 

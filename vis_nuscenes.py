@@ -276,12 +276,12 @@ def main(
         # eval
         max_iters=100000,
         log_freq=100,
-        dset='trainval',
+        dset='mini',
         batch_size=1, # batch size = 1 only
         timesteps=40, # a sequence is typically 40 frames (20s * 2fps)
         nworkers=12,
         # data/log/save/load directories
-        data_dir='../nuscenes/',
+        data_dir='/home/libing/dataset/nuscene-mini/',
         log_dir='logs_nuscenes_bevseg',
         img_dir='vis',
         ckpt_dir='checkpoints/',
