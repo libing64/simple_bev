@@ -49,3 +49,82 @@ Simple-BEV 的模型结构非常简洁，正如其名。根据对代码 (`nets/s
 
 ### 总结
 Simple-BEV 的特点在于其**"Simple"**：它没有使用复杂的 Attention 机制 (如 BEVFormer) 或深度估计网络 (如 LSS)，而是依赖**几何投影**和**3D 卷积压缩**。它证明了只要分辨率和参数量足够，简单的双线性采样加卷积网络就能在 BEV 感知任务上取得很好的效果。
+
+
+# eval结果复现
+![alt text](images/image.png)
+
+
+# Segnet
+`nets/segnet.py` 文件定义了 Simple-BEV 模型的核心网络结构 `Segnet` 及其子模块。这个网络负责从多视角图像输入生成 BEV 下的语义分割、物体中心和偏移量预测。
+
+以下是该文件的详细代码解读：
+
+### 1. 辅助模块
+文件开头定义了几个通用的神经网络模块，主要用于特征上采样和融合。
+*   `UpsamplingConcat`: 上采样后与 skip connection 的特征进行拼接 (Concat)，然后通过两层卷积融合。这是 U-Net 架构中常见的做法。
+*   `UpsamplingAdd`: 上采样后与 skip connection 的特征进行相加 (Add)。这比 Concat 更节省显存和计算量。
+*   `Encoder_res101`, `Encoder_res50`, `Encoder_eff`: 定义了多种图像主干网络（Backbone）。
+    *   它们都去掉了原始 ResNet/EfficientNet 的最后几层（如 FC 层）。
+    *   增加了一个 `upsampling_layer` 将深层特征上采样并与浅层特征融合，增强特征的分辨率。
+    *   最后通过 `depth_layer` (1x1 卷积) 将特征通道数统一映射到 `latent_dim` (默认 128)。
+
+### 2. 解码器 (Decoder)
+`Decoder` 类负责在 BEV 空间对特征进行解码。它采用了类似 **ResNet-18** 的结构，但针对 BEV 特征进行了调整。
+*   **结构**: 包含下采样路径 (`layer1`, `layer2`, `layer3`) 和上采样路径 (`up3_skip`, `up2_skip`, `up1_skip`)，形成 U-Net 结构。
+*   **多任务头 (Heads)**: 解码后的特征被送入多个并行的卷积头，用于不同的预测任务：
+    *   `feat_head`: 输出高维特征用于可视化或后续处理。
+    *   `segmentation_head`: 输出 BEV 语义分割图（例如车辆区域）。
+    *   `instance_center_head`: 输出物体中心的热力图 (Sigmoid 激活)。
+    *   `instance_offset_head`: 输出像素到物体中心的 2D 偏移向量。
+    *   `instance_future_head` (可选): 预测未来的运动流。
+
+### 3. 主模型 (Segnet)
+`Segnet` 类将上述组件整合在一起，实现了完整的端到端流程。
+
+#### 初始化 (`__init__`)
+*   设置体素网格尺寸 ($Z, Y, X$)。
+*   根据配置选择是否使用 Radar/Lidar 数据。
+*   初始化 Encoder (`self.encoder`)。
+*   **BEV Compressor**: 定义了一个 3D-to-2D 的压缩模块。
+    *   它利用 2D 卷积 (`Conv2d`) 将输入的 3D 特征体（其中高度维度 $Y$ 被 flatten 到通道维度）压缩为 BEV 特征。
+    *   如果使用 RGB，输入通道数为 `feat2d_dim * Y`。
+    *   如果使用 Radar/Lidar，它们的占据特征也会拼接到输入中，增加通道数。
+*   初始化 Decoder (`self.decoder`)。
+*   预计算 3D 坐标网格 (`self.xyz_camA`) 用于后续的投影操作。
+
+#### 前向传播 (`forward`)
+这是模型最核心的部分，流程如下：
+
+1.  **图像编码 (Image Encoding)**:
+    *   输入 `rgb_camXs`: $(B, S, 3, H, W)$，其中 $S$ 是相机数量。
+    *   对图像进行标准化。
+    *   通过 `self.encoder` 提取每张图像的特征 `feat_camXs_`。
+
+2.  **反向投影 (Back-projection / Unprojection)**:
+    *   利用 `vox_util.unproject_image_to_mem` 将 2D 图像特征投影到 3D 体素空间。
+    *   使用双线性插值 (`grid_sample`) 根据预计算的 3D 点在 2D 图像上的投影坐标采样特征。
+    *   这一步生成了每个相机的 3D 特征体 `feat_mems`。
+
+3.  **多视角融合 (Multi-view Fusion)**:
+    *   使用 `utils.basic.reduce_masked_mean` 对多相机的 3D 特征体进行平均池化。
+    *   只对有效的（投影在图像范围内）体素进行平均，忽略无效区域。
+    *   结果是统一的 3D 场景特征 `feat_mem`: $(B, C, Z, Y, X)$。
+
+4.  **数据增强 (随机翻转)**:
+    *   如果在训练中开启 `rand_flip`，会对 3D 特征体进行随机的水平翻转（针对 $X$ 轴和 $Y$ 轴方向），增强模型的鲁棒性。
+
+5.  **BEV 压缩 (BEV Compression)**:
+    *   将 3D 特征体 `feat_mem` 的高度维度 $Y$ 移到通道维度：$(B, C, Z, Y, X) \rightarrow (B, C \times Y, Z, X)$。
+    *   如果有 Radar/Lidar 特征，将其占据网格特征拼接到通道维度。
+    *   通过 `self.bev_compressor` 将高维特征压缩回 `latent_dim`，得到 BEV 特征 `feat_bev`。
+
+6.  **BEV 解码 (BEV Decoding)**:
+    *   将 `feat_bev` 送入 `self.decoder`。
+    *   解码器输出包含分割图 (`seg_e`)、中心点 (`center_e`) 和偏移量 (`offset_e`) 的字典。
+
+7.  **输出**: 返回各个任务头的预测结果。
+
+### 总结
+`Segnet` 通过显式的几何投影将 2D 图像特征提升到 3D 空间，然后通过简单的“拍扁”操作（卷积压缩高度维）将其转换为 BEV 特征，最后在 BEV 空间进行常规的分割和检测任务。这种结构简单直观，有效地利用了相机的几何先验信息。
+
