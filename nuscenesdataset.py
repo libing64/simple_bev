@@ -1020,7 +1020,10 @@ class VizData(NuscData):
         rec = self.ixes[index]
 
         imgs, rots, trans, intrins = self.get_image_data(rec, cams)
-        lidar_data = self.get_lidar_data(rec, nsweeps=self.nsweeps)
+        # lidar_data = self.get_lidar_data(rec, nsweeps=self.nsweeps)
+        # lidar_data = np.zeros((6, 0))
+        lidar_data = np.zeros((6, 30000*self.nsweeps)) # use dummy data instead
+
         binimg, egopose = self.get_binimg(rec)
         
         if refcam_id is None:
@@ -1051,7 +1054,9 @@ class VizData(NuscData):
         intrins[0] = intrin_ref
         intrins[refcam_id] = intrin_0
         
-        radar_data = self.get_radar_data(rec, nsweeps=self.nsweeps)
+        # radar_data = self.get_radar_data(rec, nsweeps=self.nsweeps)
+        # radar_data = np.zeros((3, 0))
+        radar_data = np.zeros((19, 700*self.nsweeps)) # use dummy data instead
 
         lidar_extra = lidar_data[3:]
         lidar_data = lidar_data[:3]
